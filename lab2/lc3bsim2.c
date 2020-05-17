@@ -1,0 +1,742 @@
+/*
+       Name 1: Xinwei Liu
+       UTEID 1: xl7847
+
+    
+*/
+
+/***************************************************************/
+/*                                                             */
+/*   LC-3b Instruction Level Simulator                         */
+/*                                                             */
+/*   EE 460N                                                   */
+/*   The University of Texas at Austin                         */
+/*                                                             */
+/***************************************************************/
+
+#include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/***************************************************************/
+/*                                                             */
+/* Files: isaprogram   LC-3b machine language program file     */
+/*                                                             */
+/***************************************************************/
+
+/***************************************************************/
+/* These are the functions you'll have to write.               */
+/***************************************************************/
+
+void process_instruction();
+
+/***************************************************************/
+/* A couple of useful definitions.                             */
+/***************************************************************/
+#define FALSE 0
+#define TRUE  1
+
+/***************************************************************/
+/* Use this to avoid overflowing 16 bits on the bus.           */
+/***************************************************************/
+#define Low16bits(x) ((x) & 0xFFFF)
+
+/***************************************************************/
+/* Main memory.                                                */
+/***************************************************************/
+/* MEMORY[A][0] stores the least significant byte of word at word address A
+   MEMORY[A][1] stores the most significant byte of word at word address A 
+*/
+
+#define WORDS_IN_MEM    0x08000 
+int MEMORY[WORDS_IN_MEM][2];
+
+/***************************************************************/
+
+/***************************************************************/
+
+/***************************************************************/
+/* LC-3b State info.                                           */
+/***************************************************************/
+#define LC_3b_REGS 8
+
+int RUN_BIT;	/* run bit */
+
+
+typedef struct System_Latches_Struct{
+
+  int PC,		/* program counter */
+    N,		/* n condition bit */
+    Z,		/* z condition bit */
+    P;		/* p condition bit */
+  int REGS[LC_3b_REGS]; /* register file. */
+} System_Latches;
+
+/* Data Structure for Latch */
+
+System_Latches CURRENT_LATCHES, NEXT_LATCHES;
+
+/***************************************************************/
+/* A cycle counter.                                            */
+/***************************************************************/
+int INSTRUCTION_COUNT;
+
+/***************************************************************/
+/*                                                             */
+/* Procedure : help                                            */
+/*                                                             */
+/* Purpose   : Print out a list of commands                    */
+/*                                                             */
+/***************************************************************/
+void help() {                                                    
+  printf("----------------LC-3b ISIM Help-----------------------\n");
+  printf("go               -  run program to completion         \n");
+  printf("run n            -  execute program for n instructions\n");
+  printf("mdump low high   -  dump memory from low to high      \n");
+  printf("rdump            -  dump the register & bus values    \n");
+  printf("?                -  display this help menu            \n");
+  printf("quit             -  exit the program                  \n\n");
+}
+
+/***************************************************************/
+/*                                                             */
+/* Procedure : cycle                                           */
+/*                                                             */
+/* Purpose   : Execute a cycle                                 */
+/*                                                             */
+/***************************************************************/
+void cycle() {                                                
+
+  process_instruction();
+  CURRENT_LATCHES = NEXT_LATCHES;
+  INSTRUCTION_COUNT++;
+}
+
+/***************************************************************/
+/*                                                             */
+/* Procedure : run n                                           */
+/*                                                             */
+/* Purpose   : Simulate the LC-3b for n cycles                 */
+/*                                                             */
+/***************************************************************/
+void run(int num_cycles) {                                      
+  int i;
+
+  if (RUN_BIT == FALSE) {
+    printf("Can't simulate, Simulator is halted\n\n");
+    return;
+  }
+
+  printf("Simulating for %d cycles...\n\n", num_cycles);
+  for (i = 0; i < num_cycles; i++) {
+    if (CURRENT_LATCHES.PC == 0x0000) {
+	    RUN_BIT = FALSE;
+	    printf("Simulator halted\n\n");
+	    break;
+    }
+    cycle();
+  }
+}
+
+/***************************************************************/
+/*                                                             */
+/* Procedure : go                                              */
+/*                                                             */
+/* Purpose   : Simulate the LC-3b until HALTed                 */
+/*                                                             */
+/***************************************************************/
+void go() {                                                     
+  if (RUN_BIT == FALSE) {
+    printf("Can't simulate, Simulator is halted\n\n");
+    return;
+  }
+
+  printf("Simulating...\n\n");
+  while (CURRENT_LATCHES.PC != 0x0000)
+    cycle();
+  RUN_BIT = FALSE;
+  printf("Simulator halted\n\n");
+}
+
+/***************************************************************/ 
+/*                                                             */
+/* Procedure : mdump                                           */
+/*                                                             */
+/* Purpose   : Dump a word-aligned region of memory to the     */
+/*             output file.                                    */
+/*                                                             */
+/***************************************************************/
+void mdump(FILE * dumpsim_file, int start, int stop) {          
+  int address; /* this is a byte address */
+
+  printf("\nMemory content [0x%.4x..0x%.4x] :\n", start, stop);
+  printf("-------------------------------------\n");
+  for (address = (start >> 1); address <= (stop >> 1); address++)
+    printf("  0x%.4x (%d) : 0x%.2x%.2x\n", address << 1, address << 1, MEMORY[address][1], MEMORY[address][0]);
+  printf("\n");
+
+  /* dump the memory contents into the dumpsim file */
+  fprintf(dumpsim_file, "\nMemory content [0x%.4x..0x%.4x] :\n", start, stop);
+  fprintf(dumpsim_file, "-------------------------------------\n");
+  for (address = (start >> 1); address <= (stop >> 1); address++)
+    fprintf(dumpsim_file, " 0x%.4x (%d) : 0x%.2x%.2x\n", address << 1, address << 1, MEMORY[address][1], MEMORY[address][0]);
+  fprintf(dumpsim_file, "\n");
+  fflush(dumpsim_file);
+}
+
+/***************************************************************/
+/*                                                             */
+/* Procedure : rdump                                           */
+/*                                                             */
+/* Purpose   : Dump current register and bus values to the     */   
+/*             output file.                                    */
+/*                                                             */
+/***************************************************************/
+void rdump(FILE * dumpsim_file) {                               
+  int k; 
+
+  printf("\nCurrent register/bus values :\n");
+  printf("-------------------------------------\n");
+  printf("Instruction Count : %d\n", INSTRUCTION_COUNT);
+  printf("PC                : 0x%.4x\n", CURRENT_LATCHES.PC);
+  printf("CCs: N = %d  Z = %d  P = %d\n", CURRENT_LATCHES.N, CURRENT_LATCHES.Z, CURRENT_LATCHES.P);
+  printf("Registers:\n");
+  for (k = 0; k < LC_3b_REGS; k++)
+    printf("%d: 0x%.4x\n", k, CURRENT_LATCHES.REGS[k]);
+  printf("\n");
+
+  /* dump the state information into the dumpsim file */
+  fprintf(dumpsim_file, "\nCurrent register/bus values :\n");
+  fprintf(dumpsim_file, "-------------------------------------\n");
+  fprintf(dumpsim_file, "Instruction Count : %d\n", INSTRUCTION_COUNT);
+  fprintf(dumpsim_file, "PC                : 0x%.4x\n", CURRENT_LATCHES.PC);
+  fprintf(dumpsim_file, "CCs: N = %d  Z = %d  P = %d\n", CURRENT_LATCHES.N, CURRENT_LATCHES.Z, CURRENT_LATCHES.P);
+  fprintf(dumpsim_file, "Registers:\n");
+  for (k = 0; k < LC_3b_REGS; k++)
+    fprintf(dumpsim_file, "%d: 0x%.4x\n", k, CURRENT_LATCHES.REGS[k]);
+  fprintf(dumpsim_file, "\n");
+  fflush(dumpsim_file);
+}
+
+/***************************************************************/
+/*                                                             */
+/* Procedure : get_command                                     */
+/*                                                             */
+/* Purpose   : Read a command from standard input.             */  
+/*                                                             */
+/***************************************************************/
+void get_command(FILE * dumpsim_file) {                         
+  char buffer[20];
+  int start, stop, cycles;
+
+  printf("LC-3b-SIM> ");
+
+  scanf("%s", buffer);
+  printf("\n");
+
+  switch(buffer[0]) {
+  case 'G':
+  case 'g':
+    go();
+    break;
+
+  case 'M':
+  case 'm':
+    scanf("%i %i", &start, &stop);
+    mdump(dumpsim_file, start, stop);
+    break;
+
+  case '?':
+    help();
+    break;
+  case 'Q':
+  case 'q':
+    printf("Bye.\n");
+    exit(0);
+
+  case 'R':
+  case 'r':
+    if (buffer[1] == 'd' || buffer[1] == 'D')
+	    rdump(dumpsim_file);
+    else {
+	    scanf("%d", &cycles);
+	    run(cycles);
+    }
+    break;
+
+  default:
+    printf("Invalid Command\n");
+    break;
+  }
+}
+
+/***************************************************************/
+/*                                                             */
+/* Procedure : init_memory                                     */
+/*                                                             */
+/* Purpose   : Zero out the memory array                       */
+/*                                                             */
+/***************************************************************/
+void init_memory() {                                           
+  int i;
+
+  for (i=0; i < WORDS_IN_MEM; i++) {
+    MEMORY[i][0] = 0;
+    MEMORY[i][1] = 0;
+  }
+}
+
+/**************************************************************/
+/*                                                            */
+/* Procedure : load_program                                   */
+/*                                                            */
+/* Purpose   : Load program and service routines into mem.    */
+/*                                                            */
+/**************************************************************/
+void load_program(char *program_filename) {                   
+  FILE * prog;
+  int ii, word, program_base;
+
+  /* Open program file. */
+  prog = fopen(program_filename, "r");
+  if (prog == NULL) {
+    printf("Error: Can't open program file %s\n", program_filename);
+    exit(-1);
+  }
+
+  /* Read in the program. */
+  if (fscanf(prog, "%x\n", &word) != EOF)
+    program_base = word >> 1;
+  else {
+    printf("Error: Program file is empty\n");
+    exit(-1);
+  }
+
+  ii = 0;
+  while (fscanf(prog, "%x\n", &word) != EOF) {
+    /* Make sure it fits. */
+    if (program_base + ii >= WORDS_IN_MEM) {
+	    printf("Error: Program file %s is too long to fit in memory. %x\n",
+             program_filename, ii);
+	    exit(-1);
+    }
+
+    /* Write the word to memory array. */
+    MEMORY[program_base + ii][0] = word & 0x00FF; 
+    MEMORY[program_base + ii][1] = (word >> 8) & 0x00FF; 
+    ii++;	
+  }
+ 
+  if (CURRENT_LATCHES.PC == 0) CURRENT_LATCHES.PC = (program_base << 1);
+
+  printf("Read %d words from program into memory.\n\n", ii);
+}
+
+/************************************************************/
+/*                                                          */
+/* Procedure : initialize                                   */
+/*                                                          */
+/* Purpose   : Load machine language program                */ 
+/*             and set up initial state of the machine.     */
+/*                                                          */
+/************************************************************/
+void initialize(char *program_filename, int num_prog_files) { 
+  int i;
+
+  init_memory();
+  for ( i = 0; i < num_prog_files; i++ ) {
+    load_program(program_filename);
+    while(*program_filename++ != '\0');
+  }
+  CURRENT_LATCHES.Z = 1;  
+  NEXT_LATCHES = CURRENT_LATCHES;
+    
+  RUN_BIT = TRUE;
+}
+
+/***************************************************************/
+/*                                                             */
+/* Procedure : main                                            */
+/*                                                             */
+/***************************************************************/
+int main(int argc, char *argv[]) {                              
+  FILE * dumpsim_file;
+
+  /* Error Checking */
+  if (argc < 2) {
+    printf("Error: usage: %s <program_file_1> <program_file_2> ...\n",
+           argv[0]);
+    exit(1);
+  }
+
+  printf("LC-3b Simulator\n\n");
+
+  initialize(argv[1], argc - 1);
+
+  if ( (dumpsim_file = fopen( "dumpsim", "w" )) == NULL ) {
+    printf("Error: Can't open dumpsim file\n");
+    exit(-1);
+  }
+
+  while (1)
+    get_command(dumpsim_file);
+    
+}
+
+/***************************************************************/
+/* Do not modify the above code.
+   You are allowed to use the following global variables in your
+   code. These are defined above.
+
+   MEMORY
+
+   CURRENT_LATCHES
+   NEXT_LATCHES
+
+   You may define your own local/global variables and functions.
+   You may use the functions to get at the control bits defined
+   above.
+
+   Begin your code here 	  			       */
+
+/***************************************************************/
+
+int getdr(int a)
+{  int b=0;
+   a = a&0x0E;
+   b = a >> 1;
+   return b;
+}
+
+int getsr1(int a,int b)
+{
+   int c=0;
+   a = a&0x01;
+   a = a << 2;
+   b = b&0xC0;
+   b = b >> 6;
+   c = a|b;
+   return c;
+}
+
+int sext5(int a)
+{ int b,c,d;
+  b = a&0x10;
+  c = a&0x20;
+  if (b!=c)
+  d = a|0xFFE0;
+  else d = a;
+  return d;
+}
+
+int sext6(int a)
+{ int b,c,d;
+  b = a&0x20;
+  c = a&0x40;
+  if (b!=c)
+  d = a|0xFFC0;
+  else d = a;
+  return d;
+}
+
+int sext9(int a)
+{ int b,c,d;
+  b = a&0x100;
+  c = a&0x200;
+  if (b!=c)
+  d = a|0xFE00;
+  else d = a;
+  return d;
+}
+
+int sext11(int a)
+{ int b,c,d;
+  b = a&0x400;
+  c = a&0x800;
+  if (b!=c)
+  d = a|0xF800;
+  else d = a;
+  return d;
+}  
+
+int zext(int a)
+{ int b;
+  b = a&0xFF;
+  return b;
+}
+   
+
+void process_instruction(){
+  /*  function: process_instruction
+   *  
+   *    Process one instruction at a time  
+   *       -Fetch one instruction
+   *       -Decode 
+   *       -Execute
+   *       -Update NEXT_LATCHES
+   */  
+int k = 0,tem = 0,tem0=0,tem1=0,bit5=0,bit4=0,high=0,low=0,offset,bit11=0,imm = 0,mem1=0,mem2=0,temp=0;   
+  //if (CURRENT_LATCHES.PC/2<= WORDS_IN_MEM)
+   //{
+          NEXT_LATCHES.PC = CURRENT_LATCHES.PC+2;
+        
+         tem1 = (MEMORY[CURRENT_LATCHES.PC/2][1] >> 4)&0xF;
+         tem = tem1;  //printf("%x\n",MEMORY[CURRENT_LATCHES.PC/2][1]);
+         high = MEMORY[CURRENT_LATCHES.PC/2][1];
+         low = MEMORY[CURRENT_LATCHES.PC/2][0];
+         //printf("%d\n",tem);
+      if (tem == 1)//ADD1
+      {  
+            bit5 = low&0x20;
+            imm = sext5(low&0x1F);
+        if (bit5 == 0)
+        {
+         NEXT_LATCHES.REGS[getdr(high)] = (NEXT_LATCHES.REGS[getsr1(high,low)] + NEXT_LATCHES.REGS[low&0x7])&0xFFFF;
+        }
+        else
+        {
+         NEXT_LATCHES.REGS[getdr(high)] = (NEXT_LATCHES.REGS[getsr1(high,low)] + imm)&0xFFFF;
+        }
+       if (NEXT_LATCHES.REGS[getdr(high)] == 0 )
+        { 
+         NEXT_LATCHES.P = 0;
+         NEXT_LATCHES.Z = 1;
+         NEXT_LATCHES.N = 0;
+        }
+        else if ((0x8000&NEXT_LATCHES.REGS[getdr(high)]) == 0 )
+        { 
+         NEXT_LATCHES.P = 1;
+         NEXT_LATCHES.Z = 0;
+         NEXT_LATCHES.N = 0;
+        }
+        else 
+        { 
+         NEXT_LATCHES.P = 0;
+         NEXT_LATCHES.Z = 0;
+         NEXT_LATCHES.N = 1;
+        }
+        
+      }
+      else if (tem == 5)//AND1
+      {  
+            bit5 = low&0x20;
+            imm = sext5(low&0x1F);
+        if (bit5 == 0)
+        {
+         NEXT_LATCHES.REGS[getdr(high)] = (NEXT_LATCHES.REGS[getsr1(high,low)] & NEXT_LATCHES.REGS[low&0x7])&0xFFFF;
+        }
+        else
+        {
+         NEXT_LATCHES.REGS[getdr(high)] = (NEXT_LATCHES.REGS[getsr1(high,low)] & imm)&0xFFFF;
+        }
+       if (NEXT_LATCHES.REGS[getdr(high)] == 0 )
+        { 
+         NEXT_LATCHES.P = 0;
+         NEXT_LATCHES.Z = 1;
+         NEXT_LATCHES.N = 0;
+        }
+        else if ((0x8000&NEXT_LATCHES.REGS[getdr(high)]) == 0 )
+        { 
+         NEXT_LATCHES.P = 1;
+         NEXT_LATCHES.Z = 0;
+         NEXT_LATCHES.N = 0;
+        }
+        else 
+        { 
+         NEXT_LATCHES.P = 0;
+         NEXT_LATCHES.Z = 0;
+         NEXT_LATCHES.N = 1;
+        }
+      }
+      
+      else if (tem == 0)//BR1
+      {
+       offset = (high&1) << 8;
+       offset = offset | low;
+       offset = sext9(offset);
+       //printf("%x",high&0x800);
+       //printf("%x\n",CURRENT_LATCHES.N);
+       if ((CURRENT_LATCHES.N==1&&((high&0x8)!=0))||(CURRENT_LATCHES.Z==1&&((high&0x4)!=0))||(CURRENT_LATCHES.P==1&&((high&0x2)!=0)))
+       {
+        NEXT_LATCHES.PC = (CURRENT_LATCHES.PC+2+offset*2)&0xFFFF;
+       }
+      } 
+      
+      else if (tem == 12)//JMP,RET
+      {
+         NEXT_LATCHES.PC = (CURRENT_LATCHES.REGS[getsr1(high,low)])&0xFFFF;
+      }
+      else if (tem == 4)//JSR,JSRR
+      {   
+          bit11 = high&8;
+          offset = (high&7)<<8;
+          offset = offset | low;
+          offset = sext11(offset);
+          temp = (CURRENT_LATCHES.PC+2)&0xFFFF;
+          if (bit11==0)
+          {
+           NEXT_LATCHES.PC = (CURRENT_LATCHES.REGS[getsr1(high,low)])&0xFFFF;
+          }
+          else 
+           NEXT_LATCHES.PC = (CURRENT_LATCHES.PC + 2 + offset*2)&0xFFFF;
+           NEXT_LATCHES.REGS[7] = temp;
+      }	
+      
+      else if (tem == 2)//LDB1
+      {
+          offset = low&0x3F;
+          offset = sext6(offset);
+          if (offset%2 ==0)
+          mem1 = MEMORY[(CURRENT_LATCHES.REGS[getsr1(high,low)]+offset)/2][0];
+          else mem1 = MEMORY[(CURRENT_LATCHES.REGS[getsr1(high,low)]+offset-1)/2][1];
+         if ( (0x80&mem1) == 0)
+          {NEXT_LATCHES.REGS[getdr(high)] = mem1&0xFFFF;}
+        else 
+          NEXT_LATCHES.REGS[getdr(high)] = (mem1|0xFF00)&0xFFFF;
+         if (NEXT_LATCHES.REGS[getdr(high)]==0)
+          {
+            NEXT_LATCHES.P = 0;
+            NEXT_LATCHES.Z = 1;
+            NEXT_LATCHES.N = 0;
+          }
+          else if ((0x8000&NEXT_LATCHES.REGS[getdr(high)] )== 0)
+          {
+            NEXT_LATCHES.P = 1;
+            NEXT_LATCHES.Z = 0;
+            NEXT_LATCHES.N = 0;
+          }
+          else 
+          {
+            NEXT_LATCHES.P = 0;
+            NEXT_LATCHES.Z = 0;
+            NEXT_LATCHES.N = 1;
+          }
+      }
+
+      else if (tem == 6)//LDW1
+      {
+          offset = low&0x3F;
+          offset = sext6(offset);
+          mem1 = MEMORY[CURRENT_LATCHES.REGS[getsr1(high,low)]/2+offset][0];
+          mem2 = MEMORY[CURRENT_LATCHES.REGS[getsr1(high,low)]/2+offset][1];
+          mem2 = mem2 << 8;
+          mem1 = mem2|mem1;
+          NEXT_LATCHES.REGS[getdr(high)] = mem1&0xFFFF;
+          if (NEXT_LATCHES.REGS[getdr(high)]==0)
+          {
+            NEXT_LATCHES.P = 0;
+            NEXT_LATCHES.Z = 1;
+            NEXT_LATCHES.N = 0;
+          }
+          else if ((0x8000&NEXT_LATCHES.REGS[getdr(high)]) == 0)
+          {
+            NEXT_LATCHES.P = 1;
+            NEXT_LATCHES.Z = 0;
+            NEXT_LATCHES.N = 0;
+          }
+          else 
+          {
+            NEXT_LATCHES.P = 0;
+            NEXT_LATCHES.Z = 0;
+            NEXT_LATCHES.N = 1;
+          }
+       }
+ 
+       else if (tem == 14)//LEA1
+       {  
+          offset = (high&1)<<8;
+          offset = offset|low;
+          offset = sext9(offset);
+          NEXT_LATCHES.REGS[getdr(high)] = (CURRENT_LATCHES.PC+2+offset*2)&0xFFFF;
+       }
+
+       else if (tem == 9)//NOT
+       {   
+           bit5 = low&0x20;
+           imm = sext5(low & 0x1F);
+           if (bit5 = 0)
+          {
+           NEXT_LATCHES.REGS[getdr(high)] = (CURRENT_LATCHES.REGS[getsr1(high,low)]^CURRENT_LATCHES.REGS[low&0x7])&0xFFFF;
+          }
+           else
+          {
+           NEXT_LATCHES.REGS[getdr(high)] = (CURRENT_LATCHES.REGS[getsr1(high,low)]^imm)&0xFFFF;
+          }
+           if (NEXT_LATCHES.REGS[getdr(high)]==0)
+          {
+            NEXT_LATCHES.P = 0;
+            NEXT_LATCHES.Z = 1;
+            NEXT_LATCHES.N = 0;
+          }
+          else if ((0x8000&NEXT_LATCHES.REGS[getdr(high)]) == 0)
+          {
+            NEXT_LATCHES.P = 1;
+            NEXT_LATCHES.Z = 0;
+            NEXT_LATCHES.N = 0;
+          }
+          else 
+          {
+            NEXT_LATCHES.P = 0;
+            NEXT_LATCHES.Z = 0;
+            NEXT_LATCHES.N = 1;
+          }
+       }
+     
+      else if (tem == 13)//shift1
+       {
+            bit4 = low&0x10;
+            bit5 = low&0x20;
+            imm = low&0xF;
+            if (bit4 == 0)
+            { 
+              NEXT_LATCHES.REGS[getdr(high)] = (CURRENT_LATCHES.REGS[getsr1(high,low)] << imm)&0xFFFF;
+            }
+            else if (bit5 ==0)
+            { 
+              NEXT_LATCHES.REGS[getdr(high)] = ((CURRENT_LATCHES.REGS[getsr1(high,low)]&0xFFFF) >> imm)&0xFFFF;
+            }
+            else 
+              
+            {
+              if ((high&0x80)==0)
+              NEXT_LATCHES.REGS[getdr(high)] = (CURRENT_LATCHES.REGS[getsr1(high,low)] >> imm)&0xFFFF;
+              else 
+              NEXT_LATCHES.REGS[getdr(high)] = ((CURRENT_LATCHES.REGS[getsr1(high,low)]|0xFFFF0000) >> imm)&0xFFFF;
+            }
+           
+       }  
+       else if (tem == 3)//stb1
+       {
+            mem1 = CURRENT_LATCHES.REGS[getdr(high)]&0xFF;
+            if((low&0x3F)%2==0)
+            MEMORY[CURRENT_LATCHES.REGS[getsr1(high,low)+sext6(low&0x3F)]/2][0] = mem1;
+            else MEMORY[CURRENT_LATCHES.REGS[getsr1(high,low)+sext6((low&0x3F)-1)]/2][1] = mem1;
+       }
+          
+       else if (tem == 7) //stw1
+       {    printf("%x\n",CURRENT_LATCHES.REGS[getsr1(high,low)]+sext6(low&0x3F)*2);
+            MEMORY[(CURRENT_LATCHES.REGS[getsr1(high,low)]+sext6(low&0x3F)*2)/2][0] = (CURRENT_LATCHES.REGS[getdr(high)]&0xFF)&0xFF;
+            MEMORY[(CURRENT_LATCHES.REGS[getsr1(high,low)]+sext6(low&0x3F)*2)/2][1] = ((CURRENT_LATCHES.REGS[getdr(high)]&0XFF00)>>8)&0xFF;
+       }
+     
+        else if (tem == 15)//trap1
+        {    
+             mem1 = MEMORY[zext(low)][0];
+             mem2 = MEMORY[zext(low)][1];
+             mem2 = mem2<<8;
+             NEXT_LATCHES.REGS[7] = (CURRENT_LATCHES.PC+2)&0xFFFF;
+             NEXT_LATCHES.PC = (mem1|mem2)&0xFFFF;
+            // printf("%x\n", NEXT_LATCHES.PC);
+        }
+         
+   //}else exit;
+
+
+
+
+
+
+
+}
+
